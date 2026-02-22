@@ -1,10 +1,61 @@
 import argparse
+import io
 import logging
 import os
 import socket
 import sys
 from importlib import metadata, import_module
 from dotenv import load_dotenv
+
+
+class BOMStrippingStdinWrapper(io.RawIOBase):
+    """Wrapper for stdin.buffer that strips UTF-8 BOM characters from input.
+
+    This fixes Windows-specific issues where stdin may contain BOM characters
+    that break JSON parsing in MCP servers.
+    """
+
+    def __init__(self, stdin_buffer):
+        self._stdin = stdin_buffer
+        self._bom = b'\xef\xbb\xbf'  # UTF-8 BOM
+
+    def readable(self):
+        return True
+
+    def read(self, size=-1):
+        data = self._stdin.read(size)
+        if data:
+            # Strip BOM if present at start of data
+            if data.startswith(self._bom):
+                data = data[3:]
+            # Also handle BOM that might appear at start of JSON messages
+            data = data.replace(self._bom, b'')
+        return data
+
+    def readinto(self, b):
+        data = self.read(len(b))
+        if data:
+            b[:len(data)] = data
+            return len(data)
+        return 0
+
+    def fileno(self):
+        return self._stdin.fileno()
+
+
+def install_bom_stripping_stdin():
+    """Replace sys.stdin.buffer with BOM-stripping wrapper for Windows compatibility."""
+    if sys.platform == 'win32':
+        # Wrap stdin.buffer to strip BOM characters
+        sys.stdin = io.TextIOWrapper(
+            io.BufferedReader(BOMStrippingStdinWrapper(sys.stdin.buffer)),
+            encoding='utf-8',
+            errors='replace'
+        )
+
+
+# Install BOM stripping early, before any stdin reading
+install_bom_stripping_stdin()
 
 from auth.oauth_config import reload_oauth_config, is_stateless_mode
 from core.log_formatter import EnhancedLogFormatter, configure_file_logging
